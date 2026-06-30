@@ -663,6 +663,7 @@ class V20CredManager:
             Updated credential exchange record
 
         """
+        cred_id = cred_id or cred_ex_record.cred_ex_id
         if cred_ex_record.state != (V20CredExRecord.STATE_CREDENTIAL_RECEIVED):
             raise V20CredManagerError(
                 f"Credential exchange {cred_ex_record.cred_ex_id} "
