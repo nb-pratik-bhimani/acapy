@@ -1,5 +1,5 @@
 """A presentation request content message."""
-
+import base64
 from typing import Optional, Sequence
 
 from marshmallow import EXCLUDE, ValidationError, fields, validates_schema
@@ -30,6 +30,7 @@ class V20PresRequest(AgentMessage):
         _id: Optional[str] = None,
         *,
         comment: Optional[str] = None,
+        verifier_did: Optional[str] = None,
         will_confirm: Optional[bool] = None,
         formats: Sequence[V20PresFormat] = None,
         request_presentations_attach: Sequence[AttachDecorator] = None,
@@ -52,6 +53,7 @@ class V20PresRequest(AgentMessage):
         super().__init__(_id=_id, **kwargs)
         self.comment = comment
         self.will_confirm = will_confirm or False
+        self.verifier_did = verifier_did
         self.formats = list(formats) if formats else []
         self.request_presentations_attach = (
             list(request_presentations_attach) if request_presentations_attach else []
@@ -84,7 +86,9 @@ class V20PresRequest(AgentMessage):
             else None
         )
 
-
+    def add_signature(self, sign: bytes):
+        """Add signature to request."""
+        self.signature = base64.b64encode(sign).decode("utf-8")
 class V20PresRequestSchema(AgentMessageSchema):
     """Presentation request schema."""
 
@@ -96,6 +100,9 @@ class V20PresRequestSchema(AgentMessageSchema):
 
     comment = fields.Str(
         required=False, metadata={"description": "Human-readable comment"}
+    )
+    verifier_did = fields.Str(
+        required=False, metadata={"description": "DID of verifier"}
     )
     will_confirm = fields.Bool(
         required=False,

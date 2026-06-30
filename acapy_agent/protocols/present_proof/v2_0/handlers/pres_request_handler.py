@@ -1,5 +1,9 @@
 """Presentation request message handler."""
-
+import json
+import base64
+from acapy_agent.resolver.did_resolver import DIDResolver
+from acapy_agent.wallet.base import BaseWallet
+from acapy_agent.wallet.key_type import ED25519
 from .....anoncreds.holder import AnonCredsHolderError
 from .....core.oob_processor import OobMessageProcessor
 from .....indy.holder import IndyHolderError
@@ -60,6 +64,44 @@ class V20PresRequestHandler(BaseHandler):
 
         profile = context.profile
         pres_manager = V20PresManager(profile)
+        
+        pres_request = context.message
+        if pres_request.verifier_did is not None:
+            verifier_did = pres_request.verifier_did
+            async with profile.session() as session:
+                did_resolver = session.inject(DIDResolver)
+                wallet = session.inject(BaseWallet)
+                did_document = await did_resolver.resolve(
+                    profile=profile, did=verifier_did
+                )
+                verification_method_list = did_document.get("verificationMethod", [])
+                request_verified = False
+                for method in verification_method_list:
+                    verkey = method.get("publicKeyBase58")
+                    key_type = ED25519  # need to change this to support other key types
+                    sr_pres_request = pres_request.serialize()
+                    sr_pres_request.pop("~thread", None)
+                    sr_pres_request.pop("signature", None)
+                    sr_pres_request_bytes = json.dumps(sr_pres_request).encode("utf-8")
+                    if verkey:
+                        try:
+                            request_verified = await wallet.verify_message(
+                                sr_pres_request_bytes,
+                                base64.b64decode(pres_request.signature),
+                                verkey,
+                                key_type,
+                            )
+                            if request_verified:
+                                break
+                        except Exception as e:
+                            self._logger.error(
+                                f"Could not verify signature...Retrying with next verification method: {e}"  # noqa: E501
+                            )
+                            continue
+                if not request_verified:
+                    self._logger.error(
+                        "Presentation request signature verification failed. DID of verifier is not verifed"  # noqa: E501
+                    )
 
         # Get pres ex record (holder initiated via proposal)
         # or create it (verifier sent request first)

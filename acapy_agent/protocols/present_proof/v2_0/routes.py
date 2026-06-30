@@ -67,6 +67,7 @@ from .messages.pres_problem_report import ProblemReportReason
 from .messages.pres_proposal import V20PresProposal
 from .messages.pres_request import V20PresRequest
 from .models.pres_exchange import V20PresExRecord, V20PresExRecordSchema
+from ....wallet.base import BaseWallet
 
 
 class V20PresentProofModuleResponseSchema(OpenAPISchema):
@@ -254,6 +255,13 @@ class V20PresCreateRequestRequestSchema(AdminAPIMessageTracingSchema):
         metadata={
             "description": "Verifier choice to auto-verify proof presentation",
             "example": False,
+        },
+    )
+    verifier_did = fields.Str(
+        required=False,
+        metadata={
+            "description": "Verifier sent the their did",
+            "example": "did:sov:AgGwq277xARkjKY42ZvkvX",
         },
     )
     auto_remove = fields.Bool(
@@ -1016,6 +1024,20 @@ async def present_proof_create_request(request: web.BaseRequest):
     body = await request.json()
 
     comment = body.get("comment")
+    verifier_did = body.get("verifier_did")
+    verifier_verkey = None
+    if verifier_did is not None:
+        # Remove 'did:sov:' prefix if present
+        stripped_did = verifier_did
+        if verifier_did.startswith("did:sov:"):
+            stripped_did = verifier_did[len("did:sov:"):]
+        async with profile.session() as session:
+            wallet = session.inject(BaseWallet)
+            try:
+                didinfo = await wallet.get_local_did(did=stripped_did)
+                verifier_verkey = didinfo.verkey
+            except WalletNotFoundError as err:
+                raise web.HTTPBadRequest(reason="DID is not present in wallet!") from err
     pres_request_spec = body.get("presentation_request")
     if pres_request_spec:
         if V20PresFormat.Format.INDY.api in pres_request_spec:
@@ -1025,6 +1047,7 @@ async def present_proof_create_request(request: web.BaseRequest):
 
     pres_request_message = V20PresRequest(
         comment=comment,
+        verifier_did=verifier_did,
         will_confirm=True,
         **_formats_attach(pres_request_spec, PRES_20_REQUEST, "request_presentations"),
     )
@@ -1038,6 +1061,19 @@ async def present_proof_create_request(request: web.BaseRequest):
         context.settings,
         trace_msg,
     )
+    
+    if verifier_verkey is not None:
+        async with profile.session() as session:
+            wallet = session.inject(BaseWallet)
+            sr_pres_request_message = pres_request_message.serialize()
+            sr_pres_request_message_bytes: bytes = json.dumps(
+                sr_pres_request_message
+            ).encode("utf-8")
+            sign = await wallet.sign_message(
+                sr_pres_request_message_bytes, verifier_verkey
+            )
+            pres_request_message.add_signature(sign)
+            
 
     pres_manager = V20PresManager(profile)
     pres_ex_record = None
@@ -1105,6 +1141,21 @@ async def present_proof_send_free_request(request: web.BaseRequest):
         raise web.HTTPForbidden(reason=f"Connection {connection_id} not ready")
 
     comment = body.get("comment")
+    verifier_did = body.get("verifier_did")
+    verifier_verkey = None
+    if verifier_did is not None:
+        # Remove 'did:sov:' prefix if present
+        stripped_did = verifier_did
+        if verifier_did.startswith("did:sov:"):
+            stripped_did = verifier_did[len("did:sov:"):]
+        async with profile.session() as session:
+            wallet = session.inject(BaseWallet)
+            try:
+                didinfo = await wallet.get_local_did(did=stripped_did)
+                verifier_verkey = didinfo.verkey
+            except WalletNotFoundError as err:
+                raise web.HTTPBadRequest(reason="DID is not present in wallet!") from err
+            
     pres_request_spec = body.get("presentation_request")
     if pres_request_spec:
         if V20PresFormat.Format.INDY.api in pres_request_spec:
@@ -1113,6 +1164,7 @@ async def present_proof_send_free_request(request: web.BaseRequest):
             await _add_nonce(pres_request_spec[V20PresFormat.Format.ANONCREDS.api])
     pres_request_message = V20PresRequest(
         comment=comment,
+        verifier_did=verifier_did,
         will_confirm=True,
         **_formats_attach(pres_request_spec, PRES_20_REQUEST, "request_presentations"),
     )
@@ -1126,6 +1178,18 @@ async def present_proof_send_free_request(request: web.BaseRequest):
         trace_msg,
     )
 
+    if verifier_verkey is not None:
+        async with profile.session() as session:
+            wallet = session.inject(BaseWallet)
+            sr_pres_request_message = pres_request_message.serialize()
+            sr_pres_request_message_bytes: bytes = json.dumps(
+                sr_pres_request_message
+            ).encode("utf-8")
+            sign = await wallet.sign_message(
+                sr_pres_request_message_bytes, verifier_verkey
+            )
+            pres_request_message.add_signature(sign)
+            
     pres_manager = V20PresManager(profile)
     pres_ex_record = None
     try:
