@@ -585,6 +585,7 @@ class DIFPresExchHandler:
 
         """
         credential_dict = credential.cred_value
+        path_found = False
         for path in field.paths:
             if "$.proof." in path:
                 raise DIFPresExchError(
@@ -598,6 +599,7 @@ class DIFPresExchHandler:
                 continue
             if len(match) == 0:
                 continue
+            path_found = True
             for match_item in match:
                 # No filter in constraint
                 if not field._filter:
@@ -623,6 +625,10 @@ class DIFPresExchHandler:
                     to_filter_value = match_item.value
                 if self.validate_patch(to_filter_value, field._filter):
                     return True
+        # Per DIF PE v2.0.0 §3.1.2: if the path is entirely absent from the
+        # credential and the field is optional, treat it as valid.
+        if not path_found and getattr(field, "optional", False):
+            return True
         return False
 
     def string_to_timezone_aware_datetime(self, datetime_str: str) -> datetime:
