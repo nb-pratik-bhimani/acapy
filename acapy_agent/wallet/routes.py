@@ -64,6 +64,7 @@ from ..storage.base import BaseStorage
 from ..storage.error import StorageError, StorageNotFoundError
 from ..storage.record import StorageRecord
 from ..storage.type import RECORD_TYPE_ACAPY_UPGRADING
+from ..wallet.jwe_encrypt import jwe_sign, jwe_verify
 from ..wallet.jwt import jwt_sign, jwt_verify
 from ..wallet.sd_jwt import sd_jwt_sign, sd_jwt_verify
 from .anoncreds_upgrade import (
@@ -194,6 +195,60 @@ class DIDEndpointWithTypeSchema(OpenAPISchema):
             "description": "Mediation ID to use for endpoint information.",
             "example": UUID4_EXAMPLE,
         },
+    )
+
+
+class JWESignSchema(OpenAPISchema):
+    """Request schema to sign (encrypt) a payload as compact JWE for one or more DIDs."""
+
+    payload = fields.Dict(required=True, metadata={"description": "Payload to encrypt"})
+    recipient_dids = fields.List(
+        fields.Str(validate=GENERIC_DID_VALIDATE),
+        data_key="recipientDids",
+        required=True,
+        metadata={
+            "description": (
+                "One or more holder DIDs. Each DID gets its own independent compact JWE "
+                "token. DIDs do not need to be in the local wallet (resolved via DID resolver)."
+            ),
+            "example": [GENERIC_DID_EXAMPLE],
+        },
+    )
+
+
+class JWESignResponseSchema(OpenAPISchema):
+    """Response schema for JWE sign (encrypt)."""
+
+    tokens = fields.Dict(
+        keys=fields.Str(),
+        values=fields.Str(),
+        required=True,
+        metadata={
+            "description": (
+                "Map of {did: compact_jwe_token}. One compact JWE string per recipient DID. "
+                "Send each holder their own token — only they can decrypt it."
+            )
+        },
+    )
+
+
+class JWEVerifySchema(OpenAPISchema):
+    """Request schema to verify (decrypt) a compact JWE token."""
+
+    jwe = fields.Str(
+        required=True,
+        metadata={"description": "Compact JWE token (5 dot-separated parts) to decrypt"},
+    )
+
+
+class JWEVerifyResponseSchema(OpenAPISchema):
+    """Response schema for JWE verify (decrypt)."""
+
+    payload = fields.Dict(required=True, metadata={"description": "Decrypted payload"})
+    recipient_did = fields.Str(
+        data_key="recipientDid",
+        required=True,
+        metadata={"description": "Recipient DID from JWE protected header (kid)"},
     )
 
 
@@ -1111,6 +1166,66 @@ async def wallet_set_did_endpoint(request: web.BaseRequest):
         return web.json_response({"txn": transaction.serialize()})
 
 
+@docs(
+    tags=[WALLET_TAG_TITLE],
+    summary="Sign (encrypt) a payload as a JWE JSON for one or more recipient DIDs",
+)
+@request_schema(JWESignSchema)
+@response_schema(JWESignResponseSchema(), 200, description="")
+@tenant_authentication
+async def wallet_jwe_sign(request: web.BaseRequest):
+    """Encrypt a payload for one or more recipient DIDs using ECDH-ES+A256KW/A256GCM.
+
+    Returns a JWE JSON Serialization object. The payload is encrypted once and
+    each recipient gets their own encrypted_key entry — any listed holder can
+    independently decrypt using their private key.
+    """
+    context: AdminRequestContext = request["context"]
+    body = await request.json()
+    recipient_dids = body.get("recipientDids", [])
+    payload = body.get("payload", {})
+
+    try:
+        tokens = await jwe_sign(context.profile, payload, recipient_dids)
+    except ValueError as err:
+        raise web.HTTPBadRequest(reason=str(err)) from err
+    except WalletNotFoundError as err:
+        raise web.HTTPNotFound(reason=err.roll_up) from err
+    except WalletError as err:
+        raise web.HTTPBadRequest(reason=err.roll_up) from err
+
+    return web.json_response({"tokens": tokens})
+
+
+@docs(
+    tags=[WALLET_TAG_TITLE],
+    summary="Verify (decrypt) a JWE JSON token using the wallet's private key",
+)
+@request_schema(JWEVerifySchema)
+@response_schema(JWEVerifyResponseSchema(), 200, description="")
+@tenant_authentication
+async def wallet_jwe_verify(request: web.BaseRequest):
+    """Decrypt a JWE JSON token produced by /wallet/jwe/sign.
+
+    Scans the recipients array to find the entry whose kid matches a DID in
+    this wallet, then decrypts using that DID's private key.
+    """
+    context: AdminRequestContext = request["context"]
+    body = await request.json()
+    jwe_token = body.get("jwe")
+
+    try:
+        payload, recipient_did = await jwe_verify(context.profile, jwe_token)
+    except BadJWSHeaderError as err:
+        raise web.HTTPBadRequest(reason=err.roll_up) from err
+    except WalletNotFoundError as err:
+        raise web.HTTPNotFound(reason=err.roll_up) from err
+    except WalletError as err:
+        raise web.HTTPBadRequest(reason=err.roll_up) from err
+
+    return web.json_response({"payload": payload, "recipientDid": recipient_did})
+
+
 @docs(tags=[WALLET_TAG_TITLE], summary="Create a jws using did keys with a given payload")
 @request_schema(JWSCreateSchema)
 @response_schema(WalletModuleResponseSchema(), description="")
@@ -1501,6 +1616,8 @@ async def register(app: web.Application):
             web.get("/wallet/did/public", wallet_get_public_did, allow_head=False),
             web.post("/wallet/did/public", wallet_set_public_did),
             web.post("/wallet/set-did-endpoint", wallet_set_did_endpoint),
+            web.post("/wallet/jwe/sign", wallet_jwe_sign),
+            web.post("/wallet/jwe/verify", wallet_jwe_verify),
             web.post("/wallet/jwt/sign", wallet_jwt_sign),
             web.post("/wallet/jwt/verify", wallet_jwt_verify),
             web.post("/wallet/sd-jwt/sign", wallet_sd_jwt_sign),
