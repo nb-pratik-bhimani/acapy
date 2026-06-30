@@ -18,8 +18,16 @@ from ..protocols.endorse_transaction.v1_0.manager import (
     TransactionManagerError,
 )
 from ..protocols.endorse_transaction.v1_0.util import get_endorser_connection_id
+from ..protocols.issue_credential.v1_0.models.credential_exchange import (
+    V10CredentialExchange,
+)
+from ..protocols.issue_credential.v2_0.messages.cred_format import V20CredFormat
+from ..protocols.issue_credential.v2_0.models.cred_ex_record import V20CredExRecord
 from ..protocols.revocation_notification.v1_0.models.rev_notification_record import (
     RevNotificationRecord,
+)
+from ..protocols.revocation_notification.v2_0.messages.revoke import (
+    Revoke as RevokeV2,
 )
 from ..storage.error import StorageError, StorageNotFoundError
 from .indy import IndyRevocation
@@ -125,6 +133,61 @@ class RevocationManager:
             endorser_conn_id=endorser_conn_id,
             comment=comment,
             write_ledger=write_ledger,
+        )
+
+    async def revoke_ld_proof_credential_by_cred_ex_id(
+        self,
+        cred_ex_rec: V20CredExRecord,
+        connection_id: str,
+        comment: Optional[str] = None,
+    ) -> None:
+        """Send a revocation notification for a JSON-LD credential.
+
+        No ledger interaction or tails file is involved — only a DIDComm
+        Revoke message is sent to the holder using the credential exchange
+        thread_id as the credential identifier.
+
+        Args:
+            cred_ex_rec: Credential exchange record of the issued credential.
+            connection_id: Connection ID to the holder.
+            comment: Optional human-readable revocation reason.
+        """
+
+        if V20CredFormat.Format.LD_PROOF not in [
+            V20CredFormat.Format.get(f.format)
+            for f in (cred_ex_rec.cred_issue.formats if cred_ex_rec.cred_issue else [])
+        ]:
+            raise RevocationManagerError(
+                f"Credential exchange {cred_ex_rec.cred_ex_id} is not a JSON-LD (ld_proof) credential"
+            )
+
+        status_list_id = (
+            cred_ex_rec.by_format
+            .get("cred_issue", {})
+            .get("ld_proof", {})
+            .get("credentialStatus", {})
+            .get("id")
+        )
+        if not status_list_id:
+            raise RevocationManagerError(
+                f"No credentialStatus.id found on credential exchange {cred_ex_rec.cred_ex_id}"
+            )
+        revoke_msg = RevokeV2(
+            revocation_format="ld-proof",
+            credential_id=status_list_id,
+            comment=comment,
+        )
+
+        responder = self._profile.inject_or(BaseResponder)
+        if not responder:
+            raise RevocationManagerError(
+                "No responder available to send revocation notification"
+            )
+        await responder.send(revoke_msg, connection_id=connection_id)
+        self._logger.info(
+            "Sent ld-proof revocation notification for cred_ex_id %s via connection %s",
+            cred_ex_rec.cred_ex_id,
+            connection_id,
         )
 
     async def _prepare_revocation_notification(

@@ -51,7 +51,7 @@ class RevokeSchema(AgentMessageSchema):
 
     revocation_format = fields.Str(
         required=True,
-        validate=validate.OneOf(["indy-anoncreds"]),
+        validate=validate.OneOf(["indy-anoncreds", "ld-proof"]),
         metadata={
             "description": "The format of the credential revocation ID",
             "example": "indy-anoncreds",

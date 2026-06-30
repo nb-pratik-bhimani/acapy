@@ -16,6 +16,7 @@ from ..ld_proofs import (
 )
 from ..ld_proofs import verify as ld_proofs_verify
 from .models.credential import VerifiableCredentialSchema
+from .status_list_checker import BitstringStatusListError, check_credential_status
 from .validation_result import PresentationVerificationResult
 
 
@@ -43,6 +44,21 @@ async def _verify_credential(
         purpose=purpose,
         document_loader=document_loader,
     )
+
+    # Check BitstringStatusList / StatusList2021 revocation status if present
+    if result.verified and credential.get("credentialStatus"):
+        try:
+            revoked = await check_credential_status(credential)
+            if revoked:
+                result.verified = False
+                result.errors.append(
+                    LinkedDataProofException(
+                        "Credential is revoked per credentialStatus list"
+                    )
+                )
+        except BitstringStatusListError as err:
+            result.verified = False
+            result.errors.append(err)
 
     return result
 

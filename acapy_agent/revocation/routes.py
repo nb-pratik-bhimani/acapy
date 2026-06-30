@@ -60,6 +60,8 @@ from ..protocols.endorse_transaction.v1_0.util import (
     get_endorser_connection_id,
     is_author_role,
 )
+from ..protocols.issue_credential.v2_0.messages.cred_format import V20CredFormat
+from ..protocols.issue_credential.v2_0.models.cred_ex_record import V20CredExRecord
 from ..storage.base import BaseStorage
 from ..storage.error import StorageError, StorageNotFoundError
 from ..utils.profiles import is_anoncreds_profile_raise_web_exception
@@ -542,6 +544,37 @@ async def revoke(request: web.BaseRequest):
         raise web.HTTPBadRequest(
             reason="Request must specify notify_version if notify is true"
         )
+    # Detect JSON-LD credential so we skip Indy ledger logic entirely
+    is_ld_proof = False
+    cred_ex_rec = None
+    if cred_ex_id:
+        try:
+            async with profile.session() as session:
+                cred_ex_rec = await V20CredExRecord.retrieve_by_id(session, cred_ex_id)
+            is_ld_proof = V20CredFormat.Format.LD_PROOF in [
+                V20CredFormat.Format.get(f.format)
+                for f in (cred_ex_rec.cred_issue.formats if cred_ex_rec.cred_issue else [])
+            ]
+        except StorageNotFoundError as err:
+            raise web.HTTPBadRequest(
+                reason=f"No credential exchange record found for id {cred_ex_id}"
+            ) from err
+
+    if is_ld_proof:
+        if not connection_id:
+            raise web.HTTPBadRequest(
+                reason="connection_id is required to revoke a JSON-LD credential"
+            )
+        try:
+            await rev_manager.revoke_ld_proof_credential_by_cred_ex_id(
+                cred_ex_rec=cred_ex_rec,
+                connection_id=connection_id,
+                comment=body.get("comment"),
+            )
+        except RevocationManagerError as err:
+            raise web.HTTPBadRequest(reason=err.roll_up) from err
+        return web.json_response({})
+
     try:
         if cred_ex_id:
             rev_entry_resp = await rev_manager.revoke_credential_by_cred_ex_id(
