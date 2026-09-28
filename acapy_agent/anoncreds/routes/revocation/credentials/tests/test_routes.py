@@ -118,12 +118,83 @@ class TestAnonCredsCredentialRevocationRoutes(
                 test_module, "RevocationManager", autospec=True
             ) as mock_mgr,
             mock.patch.object(test_module.web, "json_response") as mock_response,
+            mock.patch.object(
+                test_module.V20CredExRecord,
+                "retrieve_by_id",
+                mock.CoroutineMock(return_value=mock.MagicMock(cred_issue=None)),
+            ),
         ):
             mock_mgr.return_value.revoke_credential = mock.CoroutineMock()
 
             await test_module.revoke(self.request)
 
             mock_response.assert_called_once_with({})
+
+    async def test_revoke_ld_proof_by_cred_ex_id(self):
+        self.request.json = mock.CoroutineMock(
+            return_value={
+                "cred_ex_id": "dummy-cxid",
+                "connection_id": "dummy-conn-id",
+                "publish": "false",
+            }
+        )
+
+        cred_ex_rec = mock.MagicMock(
+            cred_ex_id="dummy-cxid",
+            cred_issue=mock.MagicMock(
+                formats=[mock.MagicMock(format="ld_proof")]
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                test_module, "RevocationManager", autospec=True
+            ) as mock_mgr,
+            mock.patch.object(test_module.web, "json_response") as mock_response,
+            mock.patch.object(
+                test_module.V20CredExRecord,
+                "retrieve_by_id",
+                mock.CoroutineMock(return_value=cred_ex_rec),
+            ),
+        ):
+            mock_mgr.return_value.revoke_ld_proof_credential_by_cred_ex_id = (
+                mock.CoroutineMock()
+            )
+
+            await test_module.revoke(self.request)
+
+            mock_mgr.return_value.revoke_ld_proof_credential_by_cred_ex_id.assert_called_once_with(
+                cred_ex_rec=cred_ex_rec,
+                connection_id="dummy-conn-id",
+                comment=None,
+            )
+            mock_response.assert_called_once_with({})
+
+    async def test_revoke_ld_proof_by_cred_ex_id_no_connection_id(self):
+        self.request.json = mock.CoroutineMock(
+            return_value={
+                "cred_ex_id": "dummy-cxid",
+                "publish": "false",
+            }
+        )
+
+        cred_ex_rec = mock.MagicMock(
+            cred_ex_id="dummy-cxid",
+            cred_issue=mock.MagicMock(
+                formats=[mock.MagicMock(format="ld_proof")]
+            ),
+        )
+
+        with (
+            mock.patch.object(test_module, "RevocationManager", autospec=True),
+            mock.patch.object(
+                test_module.V20CredExRecord,
+                "retrieve_by_id",
+                mock.CoroutineMock(return_value=cred_ex_rec),
+            ),
+        ):
+            with self.assertRaises(test_module.web.HTTPBadRequest):
+                await test_module.revoke(self.request)
 
     async def test_revoke_not_found(self):
         self.request.json = mock.CoroutineMock(

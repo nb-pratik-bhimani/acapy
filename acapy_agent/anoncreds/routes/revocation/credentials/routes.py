@@ -12,6 +12,8 @@ from aiohttp_apispec import (
 
 from .....admin.decorators.auth import tenant_authentication
 from .....admin.request_context import AdminRequestContext
+from .....protocols.issue_credential.v2_0.messages.cred_format import V20CredFormat
+from .....protocols.issue_credential.v2_0.models.cred_ex_record import V20CredExRecord
 from .....revocation.error import RevocationError
 from .....storage.error import StorageDuplicateError, StorageError, StorageNotFoundError
 from .....utils.profiles import is_not_anoncreds_profile_raise_web_exception
@@ -69,6 +71,38 @@ async def revoke(request: web.BaseRequest):
         )
 
     rev_manager = RevocationManager(profile)
+
+    # Detect JSON-LD credential so we skip anoncreds ledger logic entirely
+    is_ld_proof = False
+    cred_ex_rec = None
+    if cred_ex_id:
+        try:
+            async with profile.session() as session:
+                cred_ex_rec = await V20CredExRecord.retrieve_by_id(session, cred_ex_id)
+            formats = cred_ex_rec.cred_issue.formats if cred_ex_rec.cred_issue else []
+            is_ld_proof = V20CredFormat.Format.LD_PROOF in [
+                V20CredFormat.Format.get(f.format) for f in formats
+            ]
+        except StorageNotFoundError as err:
+            raise web.HTTPBadRequest(
+                reason=f"No credential exchange record found for id {cred_ex_id}"
+            ) from err
+
+    if is_ld_proof:
+        if not connection_id:
+            raise web.HTTPBadRequest(
+                reason="connection_id is required to revoke a JSON-LD credential"
+            )
+        try:
+            await rev_manager.revoke_ld_proof_credential_by_cred_ex_id(
+                cred_ex_rec=cred_ex_rec,
+                connection_id=connection_id,
+                comment=body.get("comment"),
+            )
+            return web.json_response({})
+        except RevocationManagerError as err:
+            raise web.HTTPBadRequest(reason=err.roll_up) from err
+
     try:
         if cred_ex_id:
             # rev_reg_id and cred_rev_id should not be present so we can
